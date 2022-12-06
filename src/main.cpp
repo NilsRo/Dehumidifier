@@ -35,9 +35,13 @@ const int LEDBLUE = 39;
 const int LEDPIN = 9;
 const int LEDPPIN = 2;
 const int TOUCHLED = T5;
-const int TOUCHPOWER = T4;
+const int TOUCHONOFF = T4;
 
 bool running = false;
+unsigned long sleepTime = 0;
+int threshold = 14000;
+bool touchOnOff = false;
+bool touchLed = false;
 
 //DHT11 Sensor
 #define DHTTYPE    DHT11 
@@ -59,6 +63,7 @@ bool ledOnOff = true;
 #define MQTT_PUB_TRAY "air/dehum/tray"
 #define MQTT_PUB_INFO "air/dehum/info"
 #define MQTT_SUB_LED "air/dehum/led"
+#define MQTT_SUB_SLEEP "air/dehum/sleep"
 
 AsyncMqttClient mqttClient;
 char mqttServer[STRING_LEN];
@@ -69,7 +74,6 @@ char mqttPassword[STRING_LEN];
 
 Ticker mqttReconnectTimer;
 Ticker sec10Timer;
-Ticker sec1Timer;
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
@@ -98,7 +102,7 @@ IotWebConfParameterGroup ntpGroup = IotWebConfParameterGroup("ntp", "NTP configu
 IotWebConfTextParameter ntpServerParam = IotWebConfTextParameter("server", "ntpServer", ntpServer, STRING_LEN, "de.pool.ntp.org");
 IotWebConfTextParameter ntpTimezoneParam = IotWebConfTextParameter("timezone", "ntpTimezone", ntpTimezone, STRING_LEN, "CET-1CEST,M3.5.0/02,M10.5.0/03");
 IotWebConfParameterGroup dehumGroup = IotWebConfParameterGroup("dehum", "dehumidifier configuration");
-iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity threshold").defaultValue(50.0).step(0.5).placeholder("e.g. 55.5").build();
+iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity threshold").defaultValue(55.0).step(0.5).placeholder("e.g. 55.5").build();
 
 int mod(int x, int y)
 {
@@ -388,6 +392,12 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
     Serial.println(new_payload);
     ledOnOff = (strcmp(MQTT_SUB_LED, new_payload) == 0);
   }
+  if (strcmp(topic, MQTT_SUB_SLEEP) == 0)
+  {
+    Serial.print("mqtt SLEEP: ");
+    Serial.println(new_payload);
+    sleepTime = millis() + (atoi(new_payload) * 1000);
+  }
 }
 //-- END SECTION: connection handling
 
@@ -446,6 +456,7 @@ void updateLed()
 
   if (ledOnOff)
   {    
+    digitalWrite(LEDPIN, HIGH);
     led.enable();
     if (percent > 1)
     {
@@ -462,6 +473,7 @@ void updateLed()
       led.setHSV(hue, 255, 255);    
     }
   } else {
+    digitalWrite(LEDPIN, LOW);
     led.disable();
   }
 }
@@ -486,8 +498,14 @@ void run(bool onoff) {
   }
 }
 
-void onSecTimer() {
-  updateTime();
+void onTouchOnOff()
+{
+  touchOnOff = true;
+}
+
+void onTouchLed()
+{
+  touchLed = true;
 }
 
 void onSec10Timer()
@@ -499,9 +517,6 @@ void onSec10Timer()
   }
   else {
     temp = event.temperature;
-    Serial.print(F("Temperature: "));
-    Serial.print(event.temperature);
-    Serial.println(F("°C"));
   }
  // Get humidity event and print its value.
   dht.humidity().getEvent(&event);
@@ -510,21 +525,26 @@ void onSec10Timer()
   }
   else {
     humidity = event.relative_humidity;
-    Serial.print(F("Humidity: "));
-    Serial.print(event.relative_humidity);
-    Serial.println(F("%"));
   }
 
-  if (digitalRead(TRAYPIN)) 
+  if (digitalRead(TRAYPIN) && sleepTime < millis()) 
   {
-    if (!running && humidity > 65) {
+    if (!running && humidity > dehumHumidityThresholdParam.value()) {
       run(true);
-    } else if (running && humidity < 55)
+    } else if (running && humidity < 50)
     {
       run(false);
     }
   } else {
     run(false);
+  }
+
+  if (sleepTime >= millis())
+  {
+    if (digitalRead(LEDPPIN))
+      digitalWrite(LEDPPIN, LOW);
+    else
+      digitalWrite(LEDPPIN, HIGH);
   }
 
   updateLed();
@@ -651,14 +671,17 @@ void setup()
   Serial.println("OTA Ready");
   Serial.println(WiFi.localIP());
 
-  sec1Timer.attach(1, onSecTimer);
-  sec10Timer.attach(10, onSec10Timer);  
+  sec10Timer.attach(10, onSec10Timer);
+
+  touchAttachInterrupt(TOUCHONOFF, onTouchOnOff, threshold);
+  touchAttachInterrupt(TOUCHLED, onTouchLed, threshold);
 }
 
 void loop()
 {
   iotWebConf.doLoop();
   ArduinoOTA.handle();
+  updateTime();
 
   if (needReset)
   {
@@ -667,6 +690,19 @@ void loop()
     ESP.restart();
   }
 
+  if (touchOnOff)
+  {
+    sleepTime = millis() + 3600000;   // sleep 1 hour
+    tone(BUZZERPIN, 2000, 1000);
+    touchOnOff = false;
+  }
+
+  if (touchLed)
+  {
+    ledOnOff = !ledOnOff;
+    tone(BUZZERPIN, 2000, 1000);
+    touchLed = false;
+  }
   // // Check buttons
   // unsigned long now = millis();
   // if ((500 < now - iotWebConfPinChanged) && (iotWebConfPinState != digitalRead(WIFICONFIGPIN)))
