@@ -196,57 +196,6 @@ void handleRoot()
     s += "full";  
   s += "</td>";
   s += "</tr></table></fieldset>";
-
-
-  // s += "<fieldset id=" + String(tempGroup.getId()) + ">";
-  // s += "<legend>" + String(tempGroup.label) + "</legend>";
-  // s += "<table border = \"0\"><tr>";
-  // s += "<td>" + String(tempOutParam.label) + ": </td>";
-  // s += "<td>";
-  // s += chooserNames[atol(tempOutParam.value())];
-  // dtostrf(tempOut, 2, 2, tempStr);
-  // s += " / " + String(tempStr) + "&#8451;";
-  // s += "</td>";
-  // s += "</tr><tr>";
-  // s += "<td>" + String(tempRetParam.label) + ": </td>";
-  // s += "<td>";
-  // s += chooserNames[atol(tempRetParam.value())];
-  // dtostrf(tempRet, 2, 2, tempStr);
-  // s += " / " + String(tempStr) + "&#8451;";
-  // s += "</td>";
-  // s += "</tr><tr>";
-  // s += "<td>" + String(tempIntParam.label) + ": </td>";
-  // s += "<td>";
-  // s += chooserNames[atol(tempIntParam.value())];
-  // dtostrf(tempInt, 2, 2, tempStr);
-  // s += " / " + String(tempStr) + "&#8451;";
-  // s += "</td>";
-  // s += "</tr><tr>";    
-  // s += "<td>" + String(tempRetDiffParam.label) + ": </td>";
-  // s += "<td>";  
-  // s += tempRetDiffParam.value();
-  // s += "&#8451;</td>";
-  // s += "</tr></table></fieldset>";
-
-  // s += "<fieldset id=\"status\">";
-  // s += "<legend>Status</legend>";
-  // s += "<p><h3>Pump</h3>";
-  // if (mqttHeaterStatus)
-  // {
-  //   if (pumpRunning)
-  //     s += "running";
-  //   else
-  //     s += "stopped";
-  // }
-  // else
-  //   s += "heater off";
-  // s += "<p><h3>" + String(nils_length(pump)) + " Last pump actions</h3>";
-  // for (int i = 0; i < nils_length(pump); i++)
-  // { // display last pumpOn Events in right order
-  //   byte arrIndex = mod((((int)pumpCnt) - i), nils_length(pump));
-  //   sprintf(tempStr,"%02d", i + 1);
-  //   s += String(tempStr) + ": " + pump[arrIndex] + "<br>";
-  // }
   uptime::calculateUptime();
   sprintf(tempStr, "%04u Tage %02u:%02u:%02u", uptime::getDays(), uptime::getHours(), uptime::getMinutes(), uptime::getSeconds());
   s += "<p>Uptime: " + String(tempStr);
@@ -299,14 +248,14 @@ void setTimezone(String timezone)
 void connectToMqtt()
 {
   Serial.println("Connecting to MQTT...");
-  // mqttClient.connect();
+  mqttClient.connect();
 }
 
 void onWifiConnected()
 {
   Serial.println("Connected to Wi-Fi.");
   Serial.println(WiFi.localIP());
-  // connectToMqtt();
+  connectToMqtt();
   timeClient.begin();
 }
 
@@ -565,6 +514,8 @@ void onSec10Timer()
 
 void setup()
 {
+  rtc_wdt_set_length_of_reset_signal(RTC_WDT_SYS_RESET_SIG, RTC_WDT_LENGTH_3_2us);
+  rtc_wdt_set_stage(RTC_WDT_STAGE0, RTC_WDT_STAGE_ACTION_RESET_SYSTEM);  
   rtc_wdt_set_time(RTC_WDT_STAGE0, 4000);
   // basic setup
   Serial.begin(115200);
@@ -690,6 +641,7 @@ void loop()
 {
   iotWebConf.doLoop();
   ArduinoOTA.handle();
+  rtc_wdt_feed();
 
   if (timer10sMillis < millis())
   {
@@ -763,86 +715,4 @@ void loop()
     updateLed();    
     touchLedTrigger = false;
   }
-  // // Check buttons
-  // unsigned long now = millis();
-  // if ((500 < now - iotWebConfPinChanged) && (iotWebConfPinState != digitalRead(WIFICONFIGPIN)))
-  // {
-  //   iotWebConfPinState = 1 - iotWebConfPinState; // invert pin state as it is changed
-  //   iotWebConfPinChanged = now;
-  //   if (iotWebConfPinState)
-  //   { // reset settings and reboot
-  //     iotWebConf.getRootParameterGroup()->applyDefaultValue();
-  //     iotWebConf.saveConfig();
-  //     needReset = true;
-  //   }
-  // }
-  // if ((500 < now - displayPinChanged) && (displayPinState != digitalRead(DISPLAYPIN)))
-  // {
-  //   displayPinState = 1 - displayPinState; // invert pin state as it is changed
-  //   displayPinChanged = now;
-  //   if (displayPinState) // button pressed action - set pressed time
-  //   {
-  //     // button released
-  //     timeReleased = millis();
-  //     Serial.println("Button released");
-  //     Serial.print("Display Button State: ");
-  //     Serial.print(displayPinState);
-  //     Serial.print(", Time: ");
-  //     Serial.println(timeReleased - timePressed);
-  //     if (2000 < (timeReleased - timePressed))
-  //     {
-  //       Serial.println("Long press detected");
-  //       pumpManual = !pumpManual;
-  //     }
-  //     else
-  //     {
-  //       if (pumpManual)
-  //       {
-  //         if (pumpRunning)
-  //           pumpOff();
-  //         else
-  //           pumpOn();
-  //       }
-  //       else
-  //       {
-  //         if (!displayOn)
-  //         { // display was off, do not switch page
-  //           display.displayOn();
-  //           displayTimer.attach_ms(500, updateDisplay);
-  //           displayOn = true;
-  //         }
-  //         else
-  //         {
-  //           displayPageSubChange = now; // init the subpage timer
-  //           if (displayPage == 6)
-  //             displayPage = 0;
-  //           else
-  //             displayPage++;
-
-  //           if (displayPage == 6)
-  //           {
-  //             if (iotWebConf.getState() != 4)
-  //               iotWebConf.goOffLine();
-  //           }
-  //           else
-  //           {
-  //             if (iotWebConf.getState() == 5)
-  //               iotWebConf.goOnLine();
-  //           }
-  //         }
-  //       }
-  //     }
-  //   }
-  //   else
-  //   {
-  //     timePressed = now;
-  //     Serial.println("Button pressed");
-  //   }
-  // }
-  // if (600000 < now - timePressed)
-  // { // switch display off after 10mins
-  //   display.displayOff();
-  //   displayTimer.detach();
-  //   displayOn = false;
-  // }
 }
