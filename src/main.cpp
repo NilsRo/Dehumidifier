@@ -523,6 +523,7 @@ void onSec1Timer()
     digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
   else
     digitalWrite(LEDPPIN, HIGH);
+  updateTime();
 }
 
 void onSec10Timer()
@@ -531,6 +532,7 @@ void onSec10Timer()
   dht.temperature().getEvent(&event);
   if (isnan(event.temperature)) {
     Serial.println(F("Error reading temperature!"));
+    temp = 0;
   }
   else {
     temp = event.temperature;
@@ -539,6 +541,7 @@ void onSec10Timer()
   dht.humidity().getEvent(&event);
   if (isnan(event.relative_humidity)) {
     Serial.println(F("Error reading humidity!"));
+    humidity = 0;
   }
   else {
     humidity = event.relative_humidity;
@@ -687,7 +690,6 @@ void loop()
 {
   iotWebConf.doLoop();
   ArduinoOTA.handle();
-  updateTime();
 
   if (timer10sMillis < millis())
   {
@@ -758,7 +760,7 @@ void loop()
       digitalWrite(LEDPIN, HIGH);
       tone(BUZZERPIN, 500, 500);
     }        
-    updateLed;    
+    updateLed();    
     touchLedTrigger = false;
   }
   // // Check buttons
