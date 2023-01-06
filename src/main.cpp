@@ -40,8 +40,8 @@ const int TOUCHONOFFPIN = T4;
 
 bool running = false;
 unsigned long sleepTime = 0;
-int thresholdOnOff = 27500;
-int thresholdLed = 31200;
+int thresholdOnOff = 27600;
+int thresholdLed = 31400;
 bool touchOnOff = false;
 bool touchLed = false;
 bool touchOnOffTrigger = false;
@@ -710,7 +710,7 @@ void loop()
 
   if (touchMillis < millis())
   {
-    if (touchRead(TOUCHONOFFPIN) > thresholdOnOff && !touchLed)
+    if (touchRead(TOUCHONOFFPIN) > thresholdOnOff)
     {
       touchOnOff = true;
       touchMillis = millis() + 500;
@@ -720,7 +720,10 @@ void loop()
       touchOnOff = false;
       touchOnOffTrigger = true;
     }
-    if (touchRead(TOUCHLEDPIN) > thresholdLed && !touchOnOff)
+  }
+  if (touchMillis < millis())
+  {  
+    if (touchRead(TOUCHLEDPIN) > thresholdLed)
     {
       touchLed = true;
       touchMillis = millis() + 500;
@@ -734,7 +737,10 @@ void loop()
 
   if (touchOnOff && touchOnOffTrigger)
   {
-    sleepTime = millis() + 3600000;   // sleep 1 hour
+    if (sleepTime > millis())
+      sleepTime = 0;
+    else
+      sleepTime = millis() + 3600000;   // sleep 1 hour
     tone(BUZZERPIN, 1000, 500);
     touchOnOffTrigger = false;
   }
