@@ -18,6 +18,7 @@
 #include <DHT.h>
 #include <DHT_U.h>
 #include <GRGB.h>
+#include "soc/rtc_wdt.h"
 
 #define STRING_LEN 128
 #define nils_length(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
@@ -34,14 +35,19 @@ const int LEDGREEN = 3;
 const int LEDBLUE = 39;
 const int LEDPIN = 9;
 const int LEDPPIN = 2;
-const int TOUCHLED = T5;
-const int TOUCHONOFF = T4;
+const int TOUCHLEDPIN = T5;
+const int TOUCHONOFFPIN = T4;
 
 bool running = false;
 unsigned long sleepTime = 0;
-int threshold = 14000;
+int thresholdOnOff = 27500;
+int thresholdLed = 31200;
 bool touchOnOff = false;
 bool touchLed = false;
+bool touchOnOffTrigger = false;
+bool touchLedTrigger = false;
+unsigned long touchMillis = 0;
+
 
 //DHT11 Sensor
 #define DHTTYPE    DHT11 
@@ -49,6 +55,8 @@ DHT_Unified dht(DHT11PIN, DHTTYPE);
 float temp = 0.0;
 float humidity = 0.0;
 float humidity_max = 75.0;
+unsigned long timer10sMillis = 0;
+unsigned long timer1sMillis = 0;
 
 //RGB LED
 GRGB led(COMMON_CATHODE, LEDRED, LEDGREEN, LEDBLUE);
@@ -73,7 +81,7 @@ char mqttPassword[STRING_LEN];
 // char mqttPumpValue[STRING_LEN];
 
 Ticker mqttReconnectTimer;
-Ticker sec10Timer;
+// Ticker sec10Timer;
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
@@ -102,7 +110,7 @@ IotWebConfParameterGroup ntpGroup = IotWebConfParameterGroup("ntp", "NTP configu
 IotWebConfTextParameter ntpServerParam = IotWebConfTextParameter("server", "ntpServer", ntpServer, STRING_LEN, "de.pool.ntp.org");
 IotWebConfTextParameter ntpTimezoneParam = IotWebConfTextParameter("timezone", "ntpTimezone", ntpTimezone, STRING_LEN, "CET-1CEST,M3.5.0/02,M10.5.0/03");
 IotWebConfParameterGroup dehumGroup = IotWebConfParameterGroup("dehum", "dehumidifier configuration");
-iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity threshold").defaultValue(55.0).step(0.5).placeholder("e.g. 55.5").build();
+iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity thresholdOnOff").defaultValue(55.0).step(0.5).placeholder("e.g. 55.5").build();
 
 int mod(int x, int y)
 {
@@ -245,6 +253,10 @@ void handleRoot()
   s += "<p>Last reset: " + verbose_print_reset_reason(esp_reset_reason());
   s += "</fieldset>";
   s += "<p>Go to <a href='config'>Configuration</a>";
+  s += "<br>";
+  s += touchRead(TOUCHONOFFPIN);
+  s += "<br>";
+  s += touchRead(TOUCHLEDPIN);
   s += iotWebConf.getHtmlFormatProvider()->getEnd();
 
   server.send(200, "text/html", s);
@@ -287,14 +299,14 @@ void setTimezone(String timezone)
 void connectToMqtt()
 {
   Serial.println("Connecting to MQTT...");
-  mqttClient.connect();
+  // mqttClient.connect();
 }
 
 void onWifiConnected()
 {
   Serial.println("Connected to Wi-Fi.");
   Serial.println(WiFi.localIP());
-  connectToMqtt();
+  // connectToMqtt();
   timeClient.begin();
 }
 
@@ -451,15 +463,14 @@ void updateLed()
   uint8_t red;
   uint8_t green;
   uint8_t blue;
-  float humidity_threshold = dehumHumidityThresholdParam.value();
-  float percent = (humidity - humidity_threshold) / (humidity_max - humidity_threshold);
+  float humidity_thresholdOnOff = dehumHumidityThresholdParam.value();
+  float percent = (humidity - humidity_thresholdOnOff) / (humidity_max - humidity_thresholdOnOff);
 
   if (ledOnOff)
   {    
-    digitalWrite(LEDPIN, HIGH);
-    led.enable();
     if (percent > 1)
     {
+      led.enable();
       hsvCurrent = hsv_min;
       uint8_t hue = (hsvCurrent / 360.0 * 255.0);      
       led.setHSV(hue, 255, 255);    
@@ -468,12 +479,12 @@ void updateLed()
       led.disable();
     else
     {
+      led.enable();      
       hsvCurrent = hsv_max - (hsv_max * percent);
       uint8_t hue = (hsvCurrent / 360.0 * 255.0);      
       led.setHSV(hue, 255, 255);    
     }
-  } else {
-    digitalWrite(LEDPIN, LOW);
+  } else {    
     led.disable();
   }
 }
@@ -483,11 +494,9 @@ void run(bool onoff) {
   {
     running = onoff;
     if (onoff) {
-      digitalWrite(LEDPPIN, HIGH);
       digitalWrite(FRIDGEPIN, LOW);
       digitalWrite(FANPIN, HIGH);
     } else {
-      digitalWrite(LEDPPIN, LOW);
       digitalWrite(FRIDGEPIN, HIGH);
       digitalWrite(FANPIN, LOW);
     }
@@ -506,6 +515,14 @@ void onTouchOnOff()
 void onTouchLed()
 {
   touchLed = true;
+}
+
+void onSec1Timer()
+{
+  if (sleepTime >= millis())
+    digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
+  else
+    digitalWrite(LEDPPIN, HIGH);
 }
 
 void onSec10Timer()
@@ -538,15 +555,6 @@ void onSec10Timer()
   } else {
     run(false);
   }
-
-  if (sleepTime >= millis())
-  {
-    if (digitalRead(LEDPPIN))
-      digitalWrite(LEDPPIN, LOW);
-    else
-      digitalWrite(LEDPPIN, HIGH);
-  }
-
   updateLed();
   publishUptime();
   mqttSendtemp();
@@ -554,6 +562,7 @@ void onSec10Timer()
 
 void setup()
 {
+  rtc_wdt_set_time(RTC_WDT_STAGE0, 4000);
   // basic setup
   Serial.begin(115200);
   pinMode(LED_BUILTIN, OUTPUT);
@@ -563,7 +572,7 @@ void setup()
   pinMode(LEDPPIN, OUTPUT);
   digitalWrite(FANPIN, LOW);
   digitalWrite(FRIDGEPIN, HIGH);
-  digitalWrite(LEDPIN, LOW);
+  digitalWrite(LEDPIN, HIGH);
   digitalWrite(LEDPPIN, LOW);
   digitalWrite(LED_BUILTIN, LOW);
   
@@ -671,10 +680,7 @@ void setup()
   Serial.println("OTA Ready");
   Serial.println(WiFi.localIP());
 
-  sec10Timer.attach(10, onSec10Timer);
-
-  touchAttachInterrupt(TOUCHONOFF, onTouchOnOff, threshold);
-  touchAttachInterrupt(TOUCHLED, onTouchLed, threshold);
+  // sec10Timer.attach(10, onSec10Timer);
 }
 
 void loop()
@@ -683,6 +689,18 @@ void loop()
   ArduinoOTA.handle();
   updateTime();
 
+  if (timer10sMillis < millis())
+  {
+    timer10sMillis = millis() + 10000;
+    onSec10Timer();
+  }
+
+  if (timer1sMillis < millis())
+  {
+    timer1sMillis = millis() + 1000;
+    onSec1Timer();
+  }
+
   if (needReset)
   {
     Serial.println("Rebooting in 1 second.");
@@ -690,18 +708,52 @@ void loop()
     ESP.restart();
   }
 
-  if (touchOnOff)
+  if (touchMillis < millis())
   {
-    sleepTime = millis() + 3600000;   // sleep 1 hour
-    tone(BUZZERPIN, 2000, 1000);
-    touchOnOff = false;
+    if (touchRead(TOUCHONOFFPIN) > thresholdOnOff && !touchLed)
+    {
+      touchOnOff = true;
+      touchMillis = millis() + 500;
+    }
+    else
+    {
+      touchOnOff = false;
+      touchOnOffTrigger = true;
+    }
+    if (touchRead(TOUCHLEDPIN) > thresholdLed && !touchOnOff)
+    {
+      touchLed = true;
+      touchMillis = millis() + 500;
+    }
+    else
+    {
+      touchLed = false;
+      touchLedTrigger = true;
+    }
   }
 
-  if (touchLed)
+  if (touchOnOff && touchOnOffTrigger)
   {
-    ledOnOff = !ledOnOff;
-    tone(BUZZERPIN, 2000, 1000);
-    touchLed = false;
+    sleepTime = millis() + 3600000;   // sleep 1 hour
+    tone(BUZZERPIN, 1000, 500);
+    touchOnOffTrigger = false;
+  }
+  if (touchLed && touchLedTrigger)
+  {
+    if (ledOnOff)
+    {
+      ledOnOff = false;
+      digitalWrite(LEDPIN, LOW);
+      tone(BUZZERPIN, 300, 500);
+    }
+    else
+    {
+      ledOnOff = true;
+      digitalWrite(LEDPIN, HIGH);
+      tone(BUZZERPIN, 500, 500);
+    }        
+    updateLed;    
+    touchLedTrigger = false;
   }
   // // Check buttons
   // unsigned long now = millis();
