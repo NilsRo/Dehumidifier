@@ -40,6 +40,7 @@ const int TOUCHONOFFPIN = T4;
 
 bool running = false;
 unsigned long sleepTime = 0;
+unsigned long sleepTimeMillis = 0;
 int thresholdOnOff = 27600;
 int thresholdLed = 31400;
 bool touchOnOff = false;
@@ -357,7 +358,8 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
   {
     Serial.print("mqtt SLEEP: ");
     Serial.println(new_payload);
-    sleepTime = millis() + (atoi(new_payload) * 1000);
+    sleepTime = atoi(new_payload) * 1000;
+    sleepTimeMillis = millis();
   }
 }
 //-- END SECTION: connection handling
@@ -468,7 +470,7 @@ void onTouchLed()
 
 void onSec1Timer()
 {
-  if (sleepTime >= millis())
+  if (sleepTime >= millis() - sleepTimeMillis)
     digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
   else
     digitalWrite(LEDPPIN, HIGH);
@@ -496,7 +498,7 @@ void onSec10Timer()
     humidity = event.relative_humidity;
   }
 
-  if (digitalRead(TRAYPIN) && sleepTime < millis()) 
+  if (digitalRead(TRAYPIN) && sleepTime < millis() - sleepTimeMillis) 
   {
     if (!running && humidity > dehumHumidityThresholdParam.value()) {
       run(true);
@@ -643,13 +645,13 @@ void loop()
   ArduinoOTA.handle();
   rtc_wdt_feed();
 
-  if (timer10sMillis < millis())
+  if (10000 < millis() - timer10sMillis)
   {
-    timer10sMillis = millis() + 10000;
+    timer10sMillis = millis();
     onSec10Timer();
   }
 
-  if (timer1sMillis < millis())
+  if (1000 <  millis() - timer1sMillis)
   {
     timer1sMillis = millis() + 1000;
     onSec1Timer();
@@ -662,12 +664,12 @@ void loop()
     ESP.restart();
   }
 
-  if (touchMillis < millis())
+  if (500 < millis() - touchMillis)
   {
     if (touchRead(TOUCHONOFFPIN) > thresholdOnOff)
     {
       touchOnOff = true;
-      touchMillis = millis() + 500;
+      touchMillis = millis();
     }
     else
     {
@@ -675,12 +677,12 @@ void loop()
       touchOnOffTrigger = true;
     }
   }
-  if (touchMillis < millis())
+  if (500 < millis() - touchMillis)
   {  
     if (touchRead(TOUCHLEDPIN) > thresholdLed)
     {
       touchLed = true;
-      touchMillis = millis() + 500;
+      touchMillis = millis();
     }
     else
     {
@@ -691,10 +693,10 @@ void loop()
 
   if (touchOnOff && touchOnOffTrigger)
   {
-    if (sleepTime > millis())
+    if (sleepTime > millis() - sleepTimeMillis)
       sleepTime = 0;
     else
-      sleepTime = millis() + 3600000;   // sleep 1 hour
+      sleepTime = 3600000;   // sleep 1 hour
     tone(BUZZERPIN, 1000, 500);
     touchOnOffTrigger = false;
   }
