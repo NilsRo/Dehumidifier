@@ -39,6 +39,10 @@ const int LEDPIN = 9;
 const int LEDPPIN = 2;
 const int TOUCHLEDPIN = T5;
 const int TOUCHONOFFPIN = T4;
+const long DAY = 86400000; // 86400000 milliseconds in a day
+const long HOUR = 3600000; // 3600000 milliseconds in an hour
+const long MINUTE = 60000; // 60000 milliseconds in a minute
+const long SECOND =  1000; // 1000 milliseconds in a second
 
 bool running = false;
 bool sleeping = false;
@@ -195,7 +199,11 @@ void handleRoot()
   if (running)
     s += "running";
   else if (sleeping)
-    s += "sleeping";
+  {
+    unsigned long tempTime = sleepTime - (millis() - sleepTimeMillis);
+    sprintf(tempStr, "sleeping (%02u hours %02u minutes left) ", tempTime / HOUR, (tempTime % HOUR) / MINUTE);
+    s += String(tempStr);
+  }
   else
     s += "stopped";
   s += "</td>";
@@ -505,7 +513,7 @@ void updateStatus()
     humidity = event.relative_humidity;
   }
 
-  if (digitalRead(TRAYPIN) && !(sleeping && (sleepTime < millis() - sleepTimeMillis))) 
+  if (digitalRead(TRAYPIN) && !sleeping)
   {
     if (!running && humidity > dehumHumidityThresholdParam.value()) {
       run(true);
@@ -520,10 +528,14 @@ void updateStatus()
 
 void onSec1Timer()
 {
-  // if (sleepTime >= millis() - sleepTimeMillis)
-  //   digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
-  // else
-  //   digitalWrite(LEDPPIN, HIGH);
+  if (sleeping)
+    digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
+  else
+    digitalWrite(LEDPPIN, HIGH);
+  
+  //reset sleeping
+  if ((sleepTime < millis() - sleepTimeMillis) && sleeping)
+    sleeping = false;
   updateTime();
 }
 
@@ -747,7 +759,7 @@ void setup()
   configTime(0, 0, ntpServer);
   setTimezone(ntpTimezone);
 
-  sleepTime = atoi(sleepTimeStr);
+  sleepTime = atoi(sleepTimeStr) * 3600000;
   
   ArduinoOTA.begin();
   Serial.println("OTA Ready");
