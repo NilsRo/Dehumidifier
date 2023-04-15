@@ -517,7 +517,7 @@ void updateStatus()
   {
     if (!running && humidity > dehumHumidityThresholdParam.value()) {
       run(true);
-    } else if (running && humidity < 50)
+    } else if (running && humidity < dehumHumidityThresholdParam.value() - 2)
     {
       run(false);
     }
