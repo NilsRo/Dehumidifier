@@ -14,9 +14,7 @@
 #include <time.h>
 #include <uptime.h>
 #include <algorithm>
-#include <Adafruit_Sensor.h>
-#include <DHT.h>
-#include <DHT_U.h>
+#include <DHTesp.h>
 #include <GRGB.h>
 #include "soc/rtc_wdt.h"
 #include <esp_core_dump.h>
@@ -58,8 +56,9 @@ bool touchLedTrigger = false;
 unsigned long touchMillis = 0;
 
 //DHT11 Sensor
-#define DHTTYPE    DHT11 
-DHT_Unified dht(DHT11PIN, DHTTYPE);
+// #define DHTTYPE    DHT11 
+// DHT_Unified dht(DHT11PIN, DHTTYPE);
+DHTesp dht;
 float temp = 0.0;
 float humidity = 0.0;
 float humidity_max = 75.0;
@@ -91,6 +90,10 @@ char mqttUser[STRING_LEN];
 char mqttPassword[STRING_LEN];
 // char mqttPumpTopic[STRING_LEN];
 // char mqttPumpValue[STRING_LEN];
+float humidity_mqtt = 0.0;
+float temp_mqtt = 0.0;
+int tray_mqtt = 0;
+bool mqttInit = false;
 
 Ticker mqttReconnectTimer;
 // Ticker sec10Timer;
@@ -189,10 +192,10 @@ void handleRoot()
   s += "<legend>Sensor</legend>";
   s += "<table border = \"0\"><tr>";
   s += "<td>Temperatur: </td>";
-  s += "<td>" + String(temp) + "&#8451;</td>";
+  s += "<td>" + String(temp, 1) + "&#8451;</td>";
   s += "</tr><tr>";
   s += "<td>Humidity: </td>";
-  s += "<td>" + String(humidity) + "% / " + dehumHumidityThresholdParam.value() + "%</td>";
+  s += "<td>" + String(humidity, 1) + "% / " + dehumHumidityThresholdParam.value() + "%</td>";
   s += "</tr><tr>";
   s += "<td>Status: </td>";
   s += "<td>";
@@ -297,6 +300,7 @@ void onMqttConnect(bool sessionPresent)
   Serial.print("Session present: ");
   Serial.println(sessionPresent);
   uint16_t packetIdSub;
+  mqttInit = true;
   
   packetIdSub = mqttClient.subscribe(MQTT_SUB_LED, 2);
   Serial.print("Subscribed to topic: ");
@@ -389,15 +393,38 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
 //-- END SECTION: connection handling
 
 
-void mqttSendtemp()
+void mqttSendTopics()
 {
   char msg_out[20];
-  dtostrf(humidity, 2, 2, msg_out);
-  mqttClient.publish(MQTT_PUB_HUMIDITY, 0, true, msg_out);
-  dtostrf(temp, 2, 2, msg_out);
-  mqttClient.publish(MQTT_PUB_TEMP, 0, true, msg_out);
-  dtostrf(digitalRead(TRAYPIN), 2, 2, msg_out);
-  mqttClient.publish(MQTT_PUB_TRAY, 0, true, msg_out);
+  if (humidity != humidity_mqtt || mqttInit)
+  {
+    humidity_mqtt = humidity;
+    dtostrf(humidity_mqtt, 2, 1, msg_out);
+    mqttClient.publish(MQTT_PUB_HUMIDITY, 0, true, msg_out);
+  }
+  if (temp != temp_mqtt || mqttInit)
+  {
+    temp_mqtt = temp;
+    dtostrf(temp_mqtt, 2, 1, msg_out);
+    mqttClient.publish(MQTT_PUB_TEMP, 0, true, msg_out);
+  }
+  if (tray_mqtt != digitalRead(TRAYPIN) || mqttInit)
+  {
+    tray_mqtt = digitalRead(TRAYPIN);    
+    if (tray_mqtt == 1)
+      mqttClient.publish(MQTT_PUB_TRAY, 0, true, "1");
+    else
+      mqttClient.publish(MQTT_PUB_TRAY, 0, true, "0");
+  }
+
+  if (mqttInit)
+  {
+    mqttInit = false;
+    if (running)
+      mqttClient.publish(MQTT_PUB_RUNNING, 0, true, "1");
+    else
+      mqttClient.publish(MQTT_PUB_RUNNING, 0, true, "0");
+  }
 }
 
 void getLocalTime()
@@ -476,9 +503,9 @@ void run(bool onoff) {
       digitalWrite(FANPIN, LOW);
     }
     if (running)
-      mqttClient.publish(MQTT_PUB_RUNNING, 0, true, "1");
+      mqttClient.publish(MQTT_PUB_RUNNING, 2, true, "1");
     else
-      mqttClient.publish(MQTT_PUB_RUNNING, 0, true, "0");
+      mqttClient.publish(MQTT_PUB_RUNNING, 2, true, "0");
   }
 }
 
@@ -494,25 +521,6 @@ void onTouchLed()
 
 void updateStatus()
 {
-  sensors_event_t event;
-  dht.temperature().getEvent(&event);
-  if (isnan(event.temperature)) {
-    Serial.println(F("Error reading temperature!"));
-    temp = 0;
-  }
-  else {
-    temp = event.temperature;
-  }
- // Get humidity event and print its value.
-  dht.humidity().getEvent(&event);
-  if (isnan(event.relative_humidity)) {
-    Serial.println(F("Error reading humidity!"));
-    humidity = 0;
-  }
-  else {
-    humidity = event.relative_humidity;
-  }
-
   if (digitalRead(TRAYPIN) && !sleeping)
   {
     if (!running && humidity > dehumHumidityThresholdParam.value()) {
@@ -526,6 +534,30 @@ void updateStatus()
   }
 }
 
+void updateSensor()
+{
+  //   sensors_event_t event;
+//   dht.temperature().getEvent(&event);
+//   if (isnan(event.temperature)) {
+//     Serial.println(F("Error reading temperature!"));
+//     temp = 0;
+//   }
+//   else {
+//     temp = event.temperature;
+//   }
+//  // Get humidity event and print its value.
+//   dht.humidity().getEvent(&event);
+//   if (isnan(event.relative_humidity)) {
+//     Serial.println(F("Error reading humidity!"));
+//     humidity = 0;
+//   }
+//   else {
+//     humidity = event.relative_humidity;
+//   }
+  humidity = dht.getHumidity();
+  temp = dht.getTemperature();
+}
+
 void onSec1Timer()
 {
   if (sleeping)
@@ -537,14 +569,15 @@ void onSec1Timer()
   if ((sleepTime < millis() - sleepTimeMillis) && sleeping)
     sleeping = false;
   updateTime();
+  updateLed();
+  updateStatus();
 }
 
 void onSec10Timer()
 {
-  updateStatus();
-  updateLed();
+  updateSensor();
   publishUptime();
-  mqttSendtemp();
+  mqttSendTopics();
 }
 
 
@@ -661,28 +694,30 @@ void setup()
 
   pinMode(TRAYPIN, INPUT_PULLUP);
 
-  dht.begin();
-  sensor_t sensor;
-  dht.temperature().getSensor(&sensor);
-  Serial.println(F("------------------------------------"));
-  Serial.println(F("Temperature Sensor"));
-  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
-  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
-  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
-  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("°C"));
-  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("°C"));
-  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("°C"));
-  Serial.println(F("------------------------------------"));
-  // Print humidity sensor details.
-  dht.humidity().getSensor(&sensor);
-  Serial.println(F("Humidity Sensor"));
-  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
-  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
-  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
-  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("%"));
-  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("%"));
-  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
-  Serial.println(F("------------------------------------"));
+  dht.setup(DHT11PIN, DHTesp::DHT11); // Connect DHT sensor
+
+  // dht.begin();
+  // sensor_t sensor;
+  // dht.temperature().getSensor(&sensor);
+  // Serial.println(F("------------------------------------"));
+  // Serial.println(F("Temperature Sensor"));
+  // Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+  // Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+  // Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+  // Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("°C"));
+  // Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("°C"));
+  // Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("°C"));
+  // Serial.println(F("------------------------------------"));
+  // // Print humidity sensor details.
+  // dht.humidity().getSensor(&sensor);
+  // Serial.println(F("Humidity Sensor"));
+  // Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+  // Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+  // Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+  // Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("%"));
+  // Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("%"));
+  // Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
+  // Serial.println(F("------------------------------------"));
 
 
   // WiFi.onEvent(onWifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
