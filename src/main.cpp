@@ -673,9 +673,9 @@ void readCoreDump()
 
 void setup()
 {
-  rtc_wdt_set_length_of_reset_signal(RTC_WDT_SYS_RESET_SIG, RTC_WDT_LENGTH_3_2us);
-  rtc_wdt_set_stage(RTC_WDT_STAGE0, RTC_WDT_STAGE_ACTION_RESET_SYSTEM);  
-  rtc_wdt_set_time(RTC_WDT_STAGE0, 4000);
+  // rtc_wdt_set_length_of_reset_signal(RTC_WDT_SYS_RESET_SIG, RTC_WDT_LENGTH_3_2us);
+  // rtc_wdt_set_stage(RTC_WDT_STAGE0, RTC_WDT_STAGE_ACTION_RESET_SYSTEM);  
+  // rtc_wdt_set_time(RTC_WDT_STAGE0, 4000);
   esp_core_dump_init();
   
   // basic setup
