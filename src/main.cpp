@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <DHTesp.h>
 #include <GRGB.h>
-#include "soc/rtc_wdt.h"
 #include <esp_core_dump.h>
 #include <jled.h>
 
@@ -92,8 +91,7 @@ char mqttPassword[STRING_LEN];
 // char mqttPumpValue[STRING_LEN];
 float humidity_mqtt = 0.0;
 float temp_mqtt = 0.0;
-int tray_mqtt = 0;
-bool mqttInit = false;
+bool tray_mqtt = false;
 
 Ticker mqttReconnectTimer;
 // Ticker sec10Timer;
@@ -115,16 +113,16 @@ DNSServer dnsServer;
 WebServer server(80);
 HTTPUpdateServer httpUpdater;
 IotWebConf iotWebConf("Luftentfeuchter", &dnsServer, &server, "", CONFIG_VERSION);
-IotWebConfParameterGroup mqttGroup = IotWebConfParameterGroup("mqtt", "MQTT configuration");
+IotWebConfParameterGroup mqttGroup = IotWebConfParameterGroup("mqtt", "MQTT");
 IotWebConfTextParameter mqttServerParam = IotWebConfTextParameter("server", "mqttServer", mqttServer, STRING_LEN);
 IotWebConfTextParameter mqttUserNameParam = IotWebConfTextParameter("user", "mqttUser", mqttUser, STRING_LEN);
 IotWebConfPasswordParameter mqttUserPasswordParam = IotWebConfPasswordParameter("password", "mqttPassword", mqttPassword, STRING_LEN);
 // IotWebConfTextParameter mqttPumpTopicParam = IotWebConfTextParameter("external pump start topic", "mqttPumpTopic", mqttPumpTopic, STRING_LEN, "");
 // IotWebConfTextParameter mqttPumpValueParam = IotWebConfTextParameter("external pump start Value", "mqttPumpValue", mqttPumpValue, STRING_LEN, "");
-IotWebConfParameterGroup ntpGroup = IotWebConfParameterGroup("ntp", "NTP configuration");
+IotWebConfParameterGroup ntpGroup = IotWebConfParameterGroup("ntp", "NTP");
 IotWebConfTextParameter ntpServerParam = IotWebConfTextParameter("server", "ntpServer", ntpServer, STRING_LEN, "de.pool.ntp.org");
 IotWebConfTextParameter ntpTimezoneParam = IotWebConfTextParameter("timezone", "ntpTimezone", ntpTimezone, STRING_LEN, "CET-1CEST,M3.5.0/02,M10.5.0/03");
-IotWebConfParameterGroup dehumGroup = IotWebConfParameterGroup("dehum", "dehumidifier configuration");
+IotWebConfParameterGroup dehumGroup = IotWebConfParameterGroup("dehum", "dehumidifier");
 iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity thresholdOnOff").defaultValue(55.0).step(0.5).placeholder("e.g. 55.5").build();
 IotWebConfNumberParameter sleepTimeParam = IotWebConfNumberParameter("sleep", "sleepTimeStr", sleepTimeStr, 2, "9");
 
@@ -150,6 +148,23 @@ String verbose_print_reset_reason(esp_reset_reason_t reason)
     case ESP_RST_SDIO : return("Reset over SDIO");
     default : return("NO_MEAN");
   }
+}
+
+bool checkCoreDump()
+{
+  size_t size = 0;
+  size_t address = 0;
+  if (esp_core_dump_image_get(&address, &size) == ESP_OK)
+  {
+    const esp_partition_t *pt = NULL;
+    pt = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, "coredump");
+    if (pt != NULL)
+      return true;    
+    else
+      return false;
+  }
+  else
+    return false;
 }
 
 // -- SECTION: Wifi Manager
@@ -191,13 +206,13 @@ void handleRoot()
   s += "<fieldset id=Sensor>";
   s += "<legend>Sensor</legend>";
   s += "<table border = \"0\"><tr>";
-  s += "<td>Temperatur: </td>";
+  s += "<td>temperatur: </td>";
   s += "<td>" + String(temp, 1) + "&#8451;</td>";
   s += "</tr><tr>";
-  s += "<td>Humidity: </td>";
-  s += "<td>" + String(humidity, 1) + "% / " + dehumHumidityThresholdParam.value() + "%</td>";
+  s += "<td>humidity: </td>";
+  s += "<td>" + String(humidity, 0) + "% / " + String(dehumHumidityThresholdParam.value(),0) + "%</td>";
   s += "</tr><tr>";
-  s += "<td>Status: </td>";
+  s += "<td>status: </td>";
   s += "<td>";
   if (running)
     s += "running";
@@ -211,31 +226,31 @@ void handleRoot()
     s += "stopped";
   s += "</td>";
   s += "</tr><tr>";
-  s += "<td>Tray:</td><td>";
+  s += "<td>tray:</td><td>";
   if (digitalRead(TRAYPIN))
     s += "empty";
   else 
     s += "full";  
   s += "</td>";
   s += "</tr></table></fieldset>";
+  s += "<fieldset id=\"status\">";
+  s += "<legend>Status</legend>";
   uptime::calculateUptime();
   sprintf(tempStr, "%04u Tage %02u:%02u:%02u", uptime::getDays(), uptime::getHours(), uptime::getMinutes(), uptime::getSeconds());
-  s += "<p>Uptime: " + String(tempStr);
-  s += "<p>Last reset: " + verbose_print_reset_reason(esp_reset_reason());
-  s += "</fieldset>";
-  s += "<p>Go to <a href='config'>Configuration</a>";
+  s += "<p>uptime: " + String(tempStr);
+  s += "<p>last reset: " + verbose_print_reset_reason(esp_reset_reason());
+  if (checkCoreDump())
+    s += "<p>core dump found";
+  else
+    s += "<p>no core dump found";
   s += "<br>";
   s += touchRead(TOUCHONOFFPIN);
   s += "<br>";
   s += touchRead(TOUCHLEDPIN);
+  s += "</fieldset>";
+
+  s += "<p>Go to <a href='config'>Configuration</a>";
   s += iotWebConf.getHtmlFormatProvider()->getEnd();
-
-  if (esp_core_dump_image_check() == ESP_OK)
-    s += "Core Dump gefunden";
-  else
-    s += "kein Core Dump gefunden";
-
-
   server.send(200, "text/html", s);
 }
 
@@ -266,6 +281,10 @@ bool formValidator(iotwebconf::WebRequestWrapper *webRequestWrapper)
 }
 
 //-- SECTION: connection handling
+// Necessary forward declarations
+void mqttSendTopics(bool mqttInit = false);
+//--
+
 void setTimezone(String timezone)
 {
   Serial.printf("  Setting Timezone to %s\n", ntpTimezone);
@@ -300,7 +319,6 @@ void onMqttConnect(bool sessionPresent)
   Serial.print("Session present: ");
   Serial.println(sessionPresent);
   uint16_t packetIdSub;
-  mqttInit = true;
   
   packetIdSub = mqttClient.subscribe(MQTT_SUB_LED, 2);
   Serial.print("Subscribed to topic: ");
@@ -393,7 +411,7 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
 //-- END SECTION: connection handling
 
 
-void mqttSendTopics()
+void mqttSendTopics(bool mqttInit)
 {
   char msg_out[20];
   if (humidity != humidity_mqtt || mqttInit)
@@ -411,7 +429,7 @@ void mqttSendTopics()
   if (tray_mqtt != digitalRead(TRAYPIN) || mqttInit)
   {
     tray_mqtt = digitalRead(TRAYPIN);    
-    if (tray_mqtt == 1)
+    if (tray_mqtt)
       mqttClient.publish(MQTT_PUB_TRAY, 0, true, "1");
     else
       mqttClient.publish(MQTT_PUB_TRAY, 0, true, "0");
@@ -419,7 +437,6 @@ void mqttSendTopics()
 
   if (mqttInit)
   {
-    mqttInit = false;
     if (running)
       mqttClient.publish(MQTT_PUB_RUNNING, 0, true, "1");
     else
@@ -525,7 +542,7 @@ void updateStatus()
   {
     if (!running && humidity > dehumHumidityThresholdParam.value()) {
       run(true);
-    } else if (running && humidity < dehumHumidityThresholdParam.value() - 2)
+    } else if (running && humidity < dehumHumidityThresholdParam.value() - 1) //hyteresis
     {
       run(false);
     }
@@ -579,8 +596,6 @@ void onSec10Timer()
   publishUptime();
   mqttSendTopics();
 }
-
-
 
 void readCoreDump()
 {
@@ -673,12 +688,8 @@ void readCoreDump()
 
 void setup()
 {
-  // rtc_wdt_set_length_of_reset_signal(RTC_WDT_SYS_RESET_SIG, RTC_WDT_LENGTH_3_2us);
-  // rtc_wdt_set_stage(RTC_WDT_STAGE0, RTC_WDT_STAGE_ACTION_RESET_SYSTEM);  
-  // rtc_wdt_set_time(RTC_WDT_STAGE0, 4000);
-  esp_core_dump_init();
-  
   // basic setup
+  esp_core_dump_init();
   Serial.begin(115200);
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(FANPIN, OUTPUT);
@@ -691,7 +702,6 @@ void setup()
   digitalWrite(LEDPPIN, LOW);
   digitalWrite(LED_BUILTIN, LOW);
   
-
   pinMode(TRAYPIN, INPUT_PULLUP);
 
   dht.setup(DHT11PIN, DHTesp::DHT11); // Connect DHT sensor
@@ -808,7 +818,6 @@ void loop()
   //Library handles
   iotWebConf.doLoop();
   ArduinoOTA.handle();
-  rtc_wdt_feed();
   // led_breathe.Update();
 
   if (10000 < millis() - timer10sMillis)
