@@ -18,6 +18,7 @@
 #include <GRGB.h>
 #include <esp_core_dump.h>
 #include <jled.h>
+#include <RunningMedian.h>
 
 #define STRING_LEN 128
 #define nils_length(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
@@ -39,13 +40,16 @@ const int TOUCHONOFFPIN = T4;
 const long DAY = 86400000; // 86400000 milliseconds in a day
 const long HOUR = 3600000; // 3600000 milliseconds in an hour
 const long MINUTE = 60000; // 60000 milliseconds in a minute
-const long SECOND =  1000; // 1000 milliseconds in a second
+const long SECOND = 1000;  // 1000 milliseconds in a second
 
 bool running = false;
+bool pausing = false;
 bool sleeping = false;
+bool sleepingTime = false;
 unsigned long sleepTime = 0;
 unsigned long sleepTimeMillis = 0;
-char sleepTimeStr[2];
+char sleepTimeStr[3];
+
 int thresholdOnOff = 27300;
 int thresholdLed = 31400;
 bool touchOnOff = false;
@@ -54,26 +58,27 @@ bool touchOnOffTrigger = false;
 bool touchLedTrigger = false;
 unsigned long touchMillis = 0;
 
-//DHT11 Sensor
-// #define DHTTYPE    DHT11 
-// DHT_Unified dht(DHT11PIN, DHTTYPE);
+// DHT11 Sensor
+//  #define DHTTYPE    DHT11
+//  DHT_Unified dht(DHT11PIN, DHTTYPE);
 DHTesp dht;
 float temp = 0.0;
 float humidity = 0.0;
 float humidity_max = 75.0;
+byte updateCnt = 0;
+RunningMedian humidity_med = RunningMedian(10);
 unsigned long timer10sMillis = 0;
-unsigned long timer1sMillis = 0;
+unsigned long timer100sMillis = 0;
 
-//Standard LED
-// auto led_breathe = JLed(LEDPPIN).Blink(1000, 500).Forever();
+// Standard LED
+//  auto led_breathe = JLed(LEDPPIN).Blink(1000, 500).Forever();
 
-
-//RGB LED
+// RGB LED
 GRGB led(COMMON_CATHODE, LEDRED, LEDGREEN, LEDBLUE);
 bool ledOnOff = true;
 
 // For a cloud MQTT broker, type the domain name
-//#define MQTT_HOST "example.com"
+// #define MQTT_HOST "example.com"
 #define MQTT_PORT 1883
 #define MQTT_PUB_TEMP "air/dehum/temp"
 #define MQTT_PUB_HUMIDITY "air/dehum/humidity"
@@ -84,6 +89,8 @@ bool ledOnOff = true;
 #define MQTT_SUB_SLEEP "air/dehum/sleep"
 
 AsyncMqttClient mqttClient;
+String mqttDisconnectReason;
+char mqttDisconnectTime[40];
 char mqttServer[STRING_LEN];
 char mqttUser[STRING_LEN];
 char mqttPassword[STRING_LEN];
@@ -104,6 +111,11 @@ char hostname[STRING_LEN];
 time_t now;
 struct tm localTime;
 
+char runTimeStartValue[STRING_LEN];
+char runTimeEndValue[STRING_LEN];
+static char runTimeStartValues[][STRING_LEN] = {"00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"};
+static char runTimeStartNames[][STRING_LEN] = {"00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"};
+
 #define CONFIG_VERSION "1"
 bool needReset = false;
 Preferences preferences;
@@ -123,8 +135,10 @@ IotWebConfParameterGroup ntpGroup = IotWebConfParameterGroup("ntp", "NTP");
 IotWebConfTextParameter ntpServerParam = IotWebConfTextParameter("server", "ntpServer", ntpServer, STRING_LEN, "de.pool.ntp.org");
 IotWebConfTextParameter ntpTimezoneParam = IotWebConfTextParameter("timezone", "ntpTimezone", ntpTimezone, STRING_LEN, "CET-1CEST,M3.5.0/02,M10.5.0/03");
 IotWebConfParameterGroup dehumGroup = IotWebConfParameterGroup("dehum", "dehumidifier");
-iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity thresholdOnOff").defaultValue(55.0).step(0.5).placeholder("e.g. 55.5").build();
-IotWebConfNumberParameter sleepTimeParam = IotWebConfNumberParameter("sleep", "sleepTimeStr", sleepTimeStr, 2, "9");
+iotwebconf::FloatTParameter dehumHumidityThresholdParam = iotwebconf::Builder<iotwebconf::FloatTParameter>("dehumHumidityThresholdParam").label("humidity thresholdOnOff").defaultValue(55.0).step(1).placeholder("e.g. 55").build();
+IotWebConfSelectParameter runTimeStartParam = IotWebConfSelectParameter("run hour start", "runTimeStartParam", runTimeStartValue, STRING_LEN, (char *)runTimeStartValues, (char *)runTimeStartNames, sizeof(runTimeStartValues) / STRING_LEN, STRING_LEN, "09");
+IotWebConfSelectParameter runTimeEndParam = IotWebConfSelectParameter("run hour end", "runTimeEndParam", runTimeEndValue, STRING_LEN, (char *)runTimeStartValues, (char *)runTimeStartNames, sizeof(runTimeStartValues) / STRING_LEN, STRING_LEN, "21");
+IotWebConfNumberParameter sleepTimeParam = IotWebConfNumberParameter("sleep duration", "sleepTimeStr", sleepTimeStr, 3, "10");
 
 int mod(int x, int y)
 {
@@ -135,18 +149,30 @@ String verbose_print_reset_reason(esp_reset_reason_t reason)
 {
   switch (reason)
   {
-    case ESP_RST_UNKNOWN  : return(" Reset reason can not be determined");
-    case ESP_RST_POWERON  : return("Reset due to power-on event");
-    case ESP_RST_EXT  : return("Reset by external pin (not applicable for ESP32)");
-    case ESP_RST_SW  : return("Software reset via esp_restart");
-    case ESP_RST_PANIC  : return("Software reset due to exception/panic");
-    case ESP_RST_INT_WDT  : return("Reset (software or hardware) due to interrupt watchdog");
-    case ESP_RST_TASK_WDT  : return("Reset due to task watchdog");
-    case ESP_RST_WDT  : return("Reset due to other watchdogs");
-    case ESP_RST_DEEPSLEEP : return("Reset after exiting deep sleep mode");
-    case ESP_RST_BROWNOUT : return("Brownout reset (software or hardware)");
-    case ESP_RST_SDIO : return("Reset over SDIO");
-    default : return("NO_MEAN");
+  case ESP_RST_UNKNOWN:
+    return (" Reset reason can not be determined");
+  case ESP_RST_POWERON:
+    return ("Reset due to power-on event");
+  case ESP_RST_EXT:
+    return ("Reset by external pin (not applicable for ESP32)");
+  case ESP_RST_SW:
+    return ("Software reset via esp_restart");
+  case ESP_RST_PANIC:
+    return ("Software reset due to exception/panic");
+  case ESP_RST_INT_WDT:
+    return ("Reset (software or hardware) due to interrupt watchdog");
+  case ESP_RST_TASK_WDT:
+    return ("Reset due to task watchdog");
+  case ESP_RST_WDT:
+    return ("Reset due to other watchdogs");
+  case ESP_RST_DEEPSLEEP:
+    return ("Reset after exiting deep sleep mode");
+  case ESP_RST_BROWNOUT:
+    return ("Brownout reset (software or hardware)");
+  case ESP_RST_SDIO:
+    return ("Reset over SDIO");
+  default:
+    return ("NO_MEAN");
   }
 }
 
@@ -159,7 +185,7 @@ bool checkCoreDump()
     const esp_partition_t *pt = NULL;
     pt = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, "coredump");
     if (pt != NULL)
-      return true;    
+      return true;
     else
       return false;
   }
@@ -178,7 +204,7 @@ void handleRoot()
   }
   char tempStr[128];
 
-  String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";  
+  String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
   s += iotWebConf.getHtmlFormatProvider()->getStyle();
   s += "<title>Dehumidifier</title>";
   s += iotWebConf.getHtmlFormatProvider()->getHeadEnd();
@@ -187,8 +213,14 @@ void handleRoot()
   s += "<table border = \"0\"><tr>";
   s += "<td>" + String(mqttServerParam.label) + ": </td>";
   s += "<td>" + String(mqttServer) + "</td>";
+  s += "</tr><tr>";
+  s += "<td>last disconnect reason: </td>";
+  s += "<td>" + mqttDisconnectReason + "</td>";
+  s += "</tr><tr>";
+  s += "<td>last disconnect: </td>";
+  s += "<td>" + String(mqttDisconnectTime) + "</td>";
   s += "</tr></table></fieldset>";
- 
+
   s += "<fieldset id=" + String(ntpGroup.getId()) + ">";
   s += "<legend>" + String(ntpGroup.label) + "</legend>";
   s += "<table border = \"0\"><tr>";
@@ -210,12 +242,14 @@ void handleRoot()
   s += "<td>" + String(temp, 1) + "&#8451;</td>";
   s += "</tr><tr>";
   s += "<td>humidity: </td>";
-  s += "<td>" + String(humidity, 0) + "% / " + String(dehumHumidityThresholdParam.value(),0) + "%</td>";
+  s += "<td>" + String(humidity, 0) + "% / " + String(dehumHumidityThresholdParam.value(), 0) + "%</td>";
   s += "</tr><tr>";
   s += "<td>status: </td>";
   s += "<td>";
   if (running)
     s += "running";
+  else if (pausing)
+    s += "pausing";
   else if (sleeping)
   {
     unsigned long tempTime = sleepTime - (millis() - sleepTimeMillis);
@@ -229,8 +263,8 @@ void handleRoot()
   s += "<td>tray:</td><td>";
   if (digitalRead(TRAYPIN))
     s += "empty";
-  else 
-    s += "full";  
+  else
+    s += "full";
   s += "</td>";
   s += "</tr></table></fieldset>";
   s += "<fieldset id=\"status\">";
@@ -243,10 +277,10 @@ void handleRoot()
     s += "<p>core dump found";
   else
     s += "<p>no core dump found";
-  s += "<br>";
-  s += touchRead(TOUCHONOFFPIN);
-  s += "<br>";
-  s += touchRead(TOUCHLEDPIN);
+  // s += "<br>";
+  // s += touchRead(TOUCHONOFFPIN);
+  // s += "<br>";
+  // s += touchRead(TOUCHLEDPIN);
   s += "</fieldset>";
 
   s += "<p>Go to <a href='config'>Configuration</a>";
@@ -261,7 +295,7 @@ void configSaved()
   preferences.putString("wifiPassword", String(iotWebConf.getWifiAuthInfo().password));
 
   Serial.println("Configuration saved.");
-  // TODO: Neustart bei normalen Parametern vermeiden  
+  // TODO: Neustart bei normalen Parametern vermeiden
   needReset = true;
 }
 
@@ -304,6 +338,8 @@ void onWifiConnected()
   Serial.println(WiFi.localIP());
   connectToMqtt();
   timeClient.begin();
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
 }
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info)
@@ -319,7 +355,7 @@ void onMqttConnect(bool sessionPresent)
   Serial.print("Session present: ");
   Serial.println(sessionPresent);
   uint16_t packetIdSub;
-  
+
   packetIdSub = mqttClient.subscribe(MQTT_SUB_LED, 2);
   Serial.print("Subscribed to topic: ");
   Serial.println(String(MQTT_SUB_LED) + " - " + String(packetIdSub));
@@ -328,34 +364,35 @@ void onMqttConnect(bool sessionPresent)
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
 {
-  String text;
   switch (reason)
   {
   case AsyncMqttClientDisconnectReason::TCP_DISCONNECTED:
-    text = "TCP_DISCONNECTED";
+    mqttDisconnectReason = "TCP_DISCONNECTED";
     break;
   case AsyncMqttClientDisconnectReason::MQTT_UNACCEPTABLE_PROTOCOL_VERSION:
-    text = "MQTT_UNACCEPTABLE_PROTOCOL_VERSION";
+    mqttDisconnectReason = "MQTT_UNACCEPTABLE_PROTOCOL_VERSION";
     break;
   case AsyncMqttClientDisconnectReason::MQTT_IDENTIFIER_REJECTED:
-    text = "MQTT_IDENTIFIER_REJECTED";
+    mqttDisconnectReason = "MQTT_IDENTIFIER_REJECTED";
     break;
   case AsyncMqttClientDisconnectReason::MQTT_SERVER_UNAVAILABLE:
-    text = "MQTT_SERVER_UNAVAILABLE";
+    mqttDisconnectReason = "MQTT_SERVER_UNAVAILABLE";
     break;
   case AsyncMqttClientDisconnectReason::MQTT_MALFORMED_CREDENTIALS:
-    text = "MQTT_MALFORMED_CREDENTIALS";
+    mqttDisconnectReason = "MQTT_MALFORMED_CREDENTIALS";
     break;
   case AsyncMqttClientDisconnectReason::MQTT_NOT_AUTHORIZED:
-    text = "MQTT_NOT_AUTHORIZED";
+    mqttDisconnectReason = "MQTT_NOT_AUTHORIZED";
     break;
   }
-  Serial.printf(" [%8u] Disconnected from the broker reason = %s\n", millis(), text.c_str());
-  Serial.printf(" [%8u] Reconnecting to MQTT..\n", millis());
+  strftime(mqttDisconnectTime, 40, "%d.%m.%Y %T", &localTime);
+
+  Serial.printf(" [%8u] Disconnected from the broker reason = %s\n", millis(), mqttDisconnectReason.c_str());
   digitalWrite(LED_BUILTIN, LOW);
 
   if (WiFi.isConnected())
   {
+    Serial.printf(" [%8u] Reconnecting to MQTT..\n", millis());
     mqttReconnectTimer.once(5, connectToMqtt);
   }
 }
@@ -410,7 +447,6 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
 }
 //-- END SECTION: connection handling
 
-
 void mqttSendTopics(bool mqttInit)
 {
   char msg_out[20];
@@ -428,7 +464,7 @@ void mqttSendTopics(bool mqttInit)
   }
   if (tray_mqtt != digitalRead(TRAYPIN) || mqttInit)
   {
-    tray_mqtt = digitalRead(TRAYPIN);    
+    tray_mqtt = digitalRead(TRAYPIN);
     if (tray_mqtt)
       mqttClient.publish(MQTT_PUB_TRAY, 0, true, "1");
     else
@@ -461,6 +497,15 @@ void updateTime()
   {
     timeClient.update();
     getLocalTime();
+    if (timeClient.isTimeSet())
+    {
+      if (localTime.tm_hour >= atoi(runTimeStartValue) && localTime.tm_hour <= atoi(runTimeEndValue))
+        pausing = false;
+      else
+        pausing = true;
+    }
+    else
+      pausing = false;
   }
 }
 
@@ -486,36 +531,35 @@ void updateLed()
   float percent = (humidity - humidity_thresholdOnOff) / (humidity_max - humidity_thresholdOnOff);
 
   if (ledOnOff && !sleeping)
-  {    
+  {
+    led.enable();
     if (percent > 1)
-    {
-      led.enable();
       hsvCurrent = hsv_min;
-      uint8_t hue = (hsvCurrent / 360.0 * 255.0);      
-      led.setHSV(hue, 255, 255);    
-    }
     else if (percent < 0)
-      led.disable();
+      hsvCurrent = hsv_max;
     else
-    {
-      led.enable();      
       hsvCurrent = hsv_max - (hsv_max * percent);
-      uint8_t hue = (hsvCurrent / 360.0 * 255.0);      
-      led.setHSV(hue, 255, 255);    
-    }
-  } else {    
+    uint8_t hue = (hsvCurrent / 360.0 * 255.0);
+    led.setHSV(hue, 255, 255);
+  }
+  else
+  {
     led.disable();
   }
 }
 
-void run(bool onoff) {
+void run(bool onoff)
+{
   if (onoff != running)
   {
     running = onoff;
-    if (onoff) {
+    if (onoff)
+    {
       digitalWrite(FRIDGEPIN, LOW);
       digitalWrite(FANPIN, HIGH);
-    } else {
+    }
+    else
+    {
       digitalWrite(FRIDGEPIN, HIGH);
       digitalWrite(FANPIN, LOW);
     }
@@ -538,61 +582,52 @@ void onTouchLed()
 
 void updateStatus()
 {
-  if (digitalRead(TRAYPIN) && !sleeping)
+  if (digitalRead(TRAYPIN) && !sleeping && !pausing)
   {
-    if (!running && humidity > dehumHumidityThresholdParam.value()) {
+    if (!running && humidity > dehumHumidityThresholdParam.value())
+    {
       run(true);
-    } else if (running && humidity < dehumHumidityThresholdParam.value() - 1) //hyteresis
+    }
+    else if (running && humidity < dehumHumidityThresholdParam.value() - 5) // hyteresis
     {
       run(false);
     }
-  } else {
+  }
+  else
+  {
     run(false);
   }
 }
 
 void updateSensor()
 {
-  //   sensors_event_t event;
-//   dht.temperature().getEvent(&event);
-//   if (isnan(event.temperature)) {
-//     Serial.println(F("Error reading temperature!"));
-//     temp = 0;
-//   }
-//   else {
-//     temp = event.temperature;
-//   }
-//  // Get humidity event and print its value.
-//   dht.humidity().getEvent(&event);
-//   if (isnan(event.relative_humidity)) {
-//     Serial.println(F("Error reading humidity!"));
-//     humidity = 0;
-//   }
-//   else {
-//     humidity = event.relative_humidity;
-//   }
-  humidity = dht.getHumidity();
-  temp = dht.getTemperature();
-}
+  TempAndHumidity th = dht.getTempAndHumidity();
+  if (dht.getStatus() == dht.ERROR_NONE)
+  {
+    temp = th.temperature;
 
-void onSec1Timer()
-{
-  if (sleeping)
-    digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
-  else
-    digitalWrite(LEDPPIN, HIGH);
-  
-  //reset sleeping
-  if ((sleepTime < millis() - sleepTimeMillis) && sleeping)
-    sleeping = false;
-  updateTime();
-  updateLed();
-  updateStatus();
+    if (humidity == 0.0)
+      humidity = th.humidity;
+    else
+    {
+      humidity_med.add(th.humidity);
+      if (humidity_med.getCount() > 9)
+      {
+        humidity = humidity_med.getMedian();
+        humidity_med.clear();
+      }
+    }
+  }
 }
 
 void onSec10Timer()
 {
   updateSensor();
+  updateLed();
+}
+
+void onSec100Timer()
+{
   publishUptime();
   mqttSendTopics();
 }
@@ -620,8 +655,8 @@ void readCoreDump()
         esp_err_t er = esp_partition_read(pt, i * 256, bf, toRead);
         if (er != ESP_OK)
         {
-          Serial.printf("FAIL [%x]\n",er);
-          //ESP_LOGE("ESP32", "FAIL [%x]", er);
+          Serial.printf("FAIL [%x]\n", er);
+          // ESP_LOGE("ESP32", "FAIL [%x]", er);
           break;
         }
 
@@ -639,14 +674,14 @@ void readCoreDump()
     else
     {
       Serial.println("Partition NULL");
-      //ESP_LOGE("ESP32", "Partition NULL");
+      // ESP_LOGE("ESP32", "Partition NULL");
     }
     // esp_core_dump_image_erase();
   }
   else
   {
     Serial.println("esp_core_dump_image_get() FAIL");
-    //ESP_LOGI("ESP32", "esp_core_dump_image_get() FAIL");
+    // ESP_LOGI("ESP32", "esp_core_dump_image_get() FAIL");
   }
 }
 
@@ -684,8 +719,6 @@ void readCoreDump()
 //     return err;
 // }
 
-
-
 void setup()
 {
   // basic setup
@@ -701,7 +734,6 @@ void setup()
   digitalWrite(LEDPIN, HIGH);
   digitalWrite(LEDPPIN, LOW);
   digitalWrite(LED_BUILTIN, LOW);
-  
   pinMode(TRAYPIN, INPUT_PULLUP);
 
   dht.setup(DHT11PIN, DHTesp::DHT11); // Connect DHT sensor
@@ -729,7 +761,6 @@ void setup()
   // Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
   // Serial.println(F("------------------------------------"));
 
-
   // WiFi.onEvent(onWifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
   WiFi.onEvent(onWifiDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   // WiFi.setTxPower(WIFI_POWER_19_5dBm);
@@ -737,8 +768,9 @@ void setup()
   if (!preferences.begin("wifi"))
   {
     Serial.println("Error opening NVS-Namespace");
-    for (;;);  // leere Dauerschleife -> Ende
-  }    
+    for (;;)
+      ; // leere Dauerschleife -> Ende
+  }
   iotWebConf.setupUpdateServer(
       [](const char *updatePath)
       { httpUpdater.setup(&server, updatePath); },
@@ -755,6 +787,8 @@ void setup()
 
   dehumGroup.addItem(&dehumHumidityThresholdParam);
   dehumGroup.addItem(&sleepTimeParam);
+  dehumGroup.addItem(&runTimeStartParam);
+  dehumGroup.addItem(&runTimeEndParam);
   iotWebConf.addParameterGroup(&dehumGroup);
 
   iotWebConf.setConfigSavedCallback(&configSaved);
@@ -765,16 +799,16 @@ void setup()
   if (!validConfig)
   {
     Serial.println("Invalid config detected - restoring WiFi settings...");
-    // much better handling than iotWebConf library to avoid lost wifi on configuration change    
+    // much better handling than iotWebConf library to avoid lost wifi on configuration change
     if (preferences.isKey("apPassword"))
       strncpy(iotWebConf.getApPasswordParameter()->valueBuffer, preferences.getString("apPassword").c_str(), iotWebConf.getApPasswordParameter()->getLength());
     else
       String("AP Password not found for restauration.");
-    if (preferences.isKey("wifiSsid")) 
+    if (preferences.isKey("wifiSsid"))
       strncpy(iotWebConf.getWifiSsidParameter()->valueBuffer, preferences.getString("wifiSsid").c_str(), iotWebConf.getWifiSsidParameter()->getLength());
     else
       String("WiFi SSID not found for restauration.");
-    if (preferences.isKey("wifiPassword")) 
+    if (preferences.isKey("wifiPassword"))
       strncpy(iotWebConf.getWifiPasswordParameter()->valueBuffer, preferences.getString("wifiPassword").c_str(), iotWebConf.getWifiPasswordParameter()->getLength());
     else
       String("WiFi Password not found for restauration.");
@@ -805,9 +839,7 @@ void setup()
   setTimezone(ntpTimezone);
 
   sleepTime = atoi(sleepTimeStr) * 3600000;
-  
-  ArduinoOTA.begin();
-  Serial.println("OTA Ready");
+
   Serial.println(WiFi.localIP());
 
   // sec10Timer.attach(10, onSec10Timer);
@@ -815,10 +847,21 @@ void setup()
 
 void loop()
 {
-  //Library handles
+  // Library handles
   iotWebConf.doLoop();
   ArduinoOTA.handle();
+  updateTime();
   // led_breathe.Update();
+
+  if (sleeping)
+    digitalWrite(LEDPPIN, !digitalRead(LEDPPIN));
+  else
+    digitalWrite(LEDPPIN, HIGH);
+
+  // reset sleeping
+  if ((sleepTime < millis() - sleepTimeMillis) && sleeping)
+    sleeping = false;
+  updateStatus();
 
   if (10000 < millis() - timer10sMillis)
   {
@@ -826,10 +869,10 @@ void loop()
     onSec10Timer();
   }
 
-  if (1000 <  millis() - timer1sMillis)
+  if (100000 < millis() - timer100sMillis)
   {
-    timer1sMillis = millis();
-    onSec1Timer();
+    timer100sMillis = millis();
+    onSec100Timer();
   }
 
   if (needReset)
@@ -853,7 +896,7 @@ void loop()
     }
   }
   if (500 < millis() - touchMillis)
-  {  
+  {
     if (touchRead(TOUCHLEDPIN) > thresholdLed)
     {
       touchLed = true;
@@ -888,8 +931,8 @@ void loop()
       ledOnOff = true;
       digitalWrite(LEDPIN, HIGH);
       tone(BUZZERPIN, 500, 500);
-    }        
-    updateLed();    
+    }
+    updateLed();
     touchLedTrigger = false;
   }
 }
